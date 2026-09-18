@@ -22,6 +22,9 @@ input int InpMACDSignalSMA = 9;
 //--- ATR parameter
 input int InpATRPeriod = 14;
 
+//--- click detection tolerance, in pixels, added above/below the candle's high/low
+input int InpClickTolerancePixels = 3;
+
 //+------------------------------------------------------------------+
 //| Custom indicator initialization function                         |
 //+------------------------------------------------------------------+
@@ -65,19 +68,48 @@ void OnChartEvent(const int id,
    int      window;
 
    if(!ChartXYToTimePrice(0, x, y, window, clickedTime, clickedPrice))
-     {
-      Print("TAZ Print Select Candle Log: unable to convert click coordinates to time/price.");
       return;
-     }
 
    int shift = iBarShift(Symbol(), Period(), clickedTime, false);
    if(shift < 0)
-     {
-      Print("TAZ Print Select Candle Log: no candle found for the clicked time.");
       return;
-     }
+
+   if(!IsClickOnCandle(window, x, y, shift))
+      return;
 
    PrintCandleLog(shift);
+  }
+
+//+------------------------------------------------------------------+
+//| Check whether the click landed on the candle body/wick itself,   |
+//| not on empty chart space, using a small pixel tolerance          |
+//+------------------------------------------------------------------+
+bool IsClickOnCandle(const int window, const int clickX, const int clickY, const int shift)
+  {
+   datetime barTime = iTime(Symbol(), Period(), shift);
+   double   barHigh = iHigh(Symbol(), Period(), shift);
+   double   barLow  = iLow(Symbol(), Period(), shift);
+
+   int xBarStart, yHigh, xNext, yUnused;
+   if(!ChartTimePriceToXY(0, window, barTime, barHigh, xBarStart, yHigh))
+      return(false);
+
+   int yLow;
+   if(!ChartTimePriceToXY(0, window, barTime, barLow, xNext, yLow))
+      return(false);
+
+   datetime nextBarTime = barTime + PeriodSeconds();
+   if(!ChartTimePriceToXY(0, window, nextBarTime, barHigh, xNext, yUnused))
+      return(false);
+
+   int halfWidth = MathAbs(xNext - xBarStart) / 2;
+   if(halfWidth < 1)
+      halfWidth = 1;
+
+   bool withinX = (MathAbs(clickX - xBarStart) <= halfWidth + InpClickTolerancePixels);
+   bool withinY = (clickY >= yHigh - InpClickTolerancePixels && clickY <= yLow + InpClickTolerancePixels);
+
+   return(withinX && withinY);
   }
 
 //+------------------------------------------------------------------+
@@ -105,27 +137,24 @@ void PrintCandleLog(const int shift)
 
    int digits = (int)MarketInfo(Symbol(), MODE_DIGITS);
 
-   Print("====================================================");
-   Print("TAZ Print Select Candle Log - ", Symbol(), " ", PeriodToString(Period()));
-   Print("Shift        : ", shift);
-   Print("Time         : ", TimeToString(barTime, TIME_DATE | TIME_MINUTES | TIME_SECONDS));
-   Print("Open         : ", DoubleToString(barOpen, digits));
-   Print("High         : ", DoubleToString(barHigh, digits));
-   Print("Low          : ", DoubleToString(barLow, digits));
-   Print("Close        : ", DoubleToString(barClose, digits));
-   Print("Tick Volume  : ", barTickVolume);
-   Print("----------------------------------------------------");
-   Print("EMA(", InpEMA1Period, ")     : ", DoubleToString(ema1, digits));
-   Print("EMA(", InpEMA2Period, ")    : ", DoubleToString(ema2, digits));
-   Print("EMA(", InpEMA3Period, ")    : ", DoubleToString(ema3, digits));
-   Print("EMA(", InpEMA4Period, ")    : ", DoubleToString(ema4, digits));
-   Print("EMA(", InpEMA5Period, ")   : ", DoubleToString(ema5, digits));
-   Print("----------------------------------------------------");
-   Print("MACD Main    : ", DoubleToString(macdMain, digits));
-   Print("MACD Signal  : ", DoubleToString(macdSignal, digits));
-   Print("----------------------------------------------------");
-   Print("ATR(", InpATRPeriod, ")     : ", DoubleToString(atr, digits));
-   Print("====================================================");
+   string line = StringFormat(
+      "==== TAZ Candle Log | %s %s | Shift=%d | Time=%s | O=%s H=%s L=%s C=%s Vol=%d | EMA%d=%s EMA%d=%s EMA%d=%s EMA%d=%s EMA%d=%s | MACD Main=%s Signal=%s | ATR%d=%s ====",
+      Symbol(), PeriodToString(Period()),
+      shift,
+      TimeToString(barTime, TIME_DATE | TIME_MINUTES | TIME_SECONDS),
+      DoubleToString(barOpen, digits), DoubleToString(barHigh, digits),
+      DoubleToString(barLow, digits), DoubleToString(barClose, digits),
+      barTickVolume,
+      InpEMA1Period, DoubleToString(ema1, digits),
+      InpEMA2Period, DoubleToString(ema2, digits),
+      InpEMA3Period, DoubleToString(ema3, digits),
+      InpEMA4Period, DoubleToString(ema4, digits),
+      InpEMA5Period, DoubleToString(ema5, digits),
+      DoubleToString(macdMain, digits), DoubleToString(macdSignal, digits),
+      InpATRPeriod, DoubleToString(atr, digits)
+      );
+
+   Print(line);
   }
 
 //+------------------------------------------------------------------+
