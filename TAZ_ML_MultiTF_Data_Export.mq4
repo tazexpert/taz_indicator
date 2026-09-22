@@ -10,6 +10,9 @@
 //--- Lookahead for target/label calculation
 input int LookAheadBars = 5;
 
+//--- Number of most recent bars to export
+input int InpExportBars = 100;
+
 //--- EMA periods (used on CTF, H1 and H4)
 input int InpEMA1Period = 21;
 input int InpEMA2Period = 50;
@@ -37,7 +40,7 @@ void OnStart()
   {
    int totalBars = Bars;
 
-   int startBar = totalBars - 100;
+   int startBar = totalBars - InpExportBars;
    int endBar   = LookAheadBars + 1;
 
    if(startBar < endBar)
