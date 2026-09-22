@@ -1,14 +1,11 @@
 //+------------------------------------------------------------------+
 //|                            TAZ ML MultiTF Data Export.mq4        |
-//|   Export multi-timeframe indicator features and future targets   |
-//|   to CSV for Machine Learning training                           |
+//|   Export multi-timeframe indicator features and ZigZag-based     |
+//|   swing targets to CSV for Machine Learning training             |
 //+------------------------------------------------------------------+
 #property copyright "TAZ"
 #property strict
 #property show_inputs
-
-//--- Lookahead for target/label calculation
-input int LookAheadBars = 5;
 
 //--- Number of most recent bars to export
 input int InpExportBars = 100;
@@ -30,6 +27,11 @@ input int InpMACDFastEMA   = 12;
 input int InpMACDSlowEMA   = 26;
 input int InpMACDSignalSMA = 9;
 
+//--- ZigZag parameters used to locate the next future swing High/Low
+input int InpZZDepth     = 12;
+input int InpZZDeviation = 5;
+input int InpZZBackstep  = 3;
+
 //--- output file name
 input string InpFileName = "TAZ_ML_MultiTF_Data.csv";
 
@@ -40,13 +42,24 @@ void OnStart()
   {
    int totalBars = Bars;
 
+   //--- start at Bars-InpExportBars, walk down to bar 1 (bar 0 is skipped: still forming)
    int startBar = totalBars - InpExportBars;
-   int endBar   = LookAheadBars + 1;
+   int endBar   = 1;
 
    if(startBar < endBar)
      {
       Print("TAZ ML Export: Not enough history bars to export. Bars=", totalBars,
             " Required startBar=", startBar, " endBar=", endBar);
+      return;
+     }
+
+   //--- warm up the ZigZag indicator once and verify it loaded correctly
+   ResetLastError();
+   iCustom(NULL, 0, "ZigZag", InpZZDepth, InpZZDeviation, InpZZBackstep, 1, 0);
+   if(GetLastError() == ERR_INDICATOR_CANNOT_LOAD)
+     {
+      Print("TAZ ML Export: Failed to load the standard 'ZigZag' custom indicator. ",
+            "Make sure ZigZag.ex4 is available in MQL4\\Indicators.");
       return;
      }
 
@@ -66,6 +79,7 @@ void OnStart()
    bool   havePrev = false;
 
    int rowsWritten = 0;
+   int rowsSkipped = 0;
 
    //--- loop from oldest bar to newest bar within the requested range
    for(int i = startBar; i >= endBar; i--)
@@ -133,16 +147,50 @@ void OnStart()
       double rsiH4    = iRSI(NULL, PERIOD_H4, InpRSIPeriod, PRICE_CLOSE, shiftH4);
       double macdMainH4 = iMACD(NULL, PERIOD_H4, InpMACDFastEMA, InpMACDSlowEMA, InpMACDSignalSMA, PRICE_CLOSE, MODE_MAIN, shiftH4);
 
-      //--- Targets / labels: future movement from bar i to bar (i - LookAheadBars)
-      int futureShift = i - LookAheadBars;
+      //--- Targets / labels: find the next ZigZag swing High and swing Low that occur
+      //--- strictly after bar i (i.e. searching forward in time from j=i-1 down to j=0)
+      double nextZZHigh = 0.0;
+      double nextZZLow  = 0.0;
+      bool   foundHigh  = false;
+      bool   foundLow   = false;
 
-      double targetCloseDiff = Close[futureShift] - barClose;
+      for(int j = i - 1; j >= 0; j--)
+        {
+         if(!foundHigh)
+           {
+            double zzHighVal = iCustom(NULL, 0, "ZigZag", InpZZDepth, InpZZDeviation, InpZZBackstep, 1, j);
+            if(zzHighVal != 0.0)
+              {
+               nextZZHigh = zzHighVal;
+               foundHigh = true;
+              }
+           }
 
-      int highestIndex = iHighest(NULL, 0, MODE_HIGH, LookAheadBars, futureShift);
-      int lowestIndex   = iLowest(NULL, 0, MODE_LOW, LookAheadBars, futureShift);
+         if(!foundLow)
+           {
+            double zzLowVal = iCustom(NULL, 0, "ZigZag", InpZZDepth, InpZZDeviation, InpZZBackstep, 2, j);
+            if(zzLowVal != 0.0)
+              {
+               nextZZLow = zzLowVal;
+               foundLow = true;
+              }
+           }
 
-      double targetMaxHigh = High[highestIndex] - barClose;
-      double targetMaxLow  = barClose - Low[lowestIndex];
+         //--- both swing points located: stop searching immediately so we capture
+         //--- only the very next swing cycle, not a later one
+         if(foundHigh && foundLow)
+            break;
+        }
+
+      //--- if the loop reached bar 0 without finding both swing points, skip this row
+      if(!foundHigh || !foundLow)
+        {
+         rowsSkipped++;
+         continue;
+        }
+
+      double targetZZMaxUp   = nextZZHigh - barClose;
+      double targetZZMaxDown = barClose - nextZZLow;
 
       WriteRow(handle, digitsOf(),
                barTime, barOpen, barHigh, barLow, barClose, barVolume,
@@ -152,14 +200,16 @@ void OnStart()
                macdMainCTF, macdSignalCTF, macdZeroCrossover,
                ema21H1, ema50H1, ema100H1, ema200H1, rsiH1, macdMainH1,
                ema21H4, ema50H4, ema100H4, ema200H4, rsiH4, macdMainH4,
-               targetCloseDiff, targetMaxHigh, targetMaxLow);
+               targetZZMaxUp, targetZZMaxDown);
 
       rowsWritten++;
      }
 
    FileClose(handle);
 
-   Print("TAZ ML Export: Finished. Rows written=", rowsWritten, " File=", InpFileName);
+   Print("TAZ ML Export: Finished. Rows written=", rowsWritten,
+         " Rows skipped (no future ZigZag pair found)=", rowsSkipped,
+         " File=", InpFileName);
   }
 
 //+------------------------------------------------------------------+
@@ -183,7 +233,7 @@ void WriteHeader(const int handle)
       "MACD_Main_CTF", "MACD_Signal_CTF", "MACD_Zero_Crossover",
       "EMA21_H1", "EMA50_H1", "EMA100_H1", "EMA200_H1", "RSI_H1", "MACD_Main_H1",
       "EMA21_H4", "EMA50_H4", "EMA100_H4", "EMA200_H4", "RSI_H4", "MACD_Main_H4",
-      "Target_Close_Diff", "Target_Max_High", "Target_Max_Low");
+      "Target_ZZ_Max_Up", "Target_ZZ_Max_Down");
   }
 
 //+------------------------------------------------------------------+
@@ -200,7 +250,7 @@ void WriteRow(const int handle, const int digits,
               const double rsiH1, const double macdMainH1,
               const double ema21H4, const double ema50H4, const double ema100H4, const double ema200H4,
               const double rsiH4, const double macdMainH4,
-              const double targetCloseDiff, const double targetMaxHigh, const double targetMaxLow)
+              const double targetZZMaxUp, const double targetZZMaxDown)
   {
    FileWrite(handle,
       TimeToString(barTime, TIME_DATE | TIME_MINUTES | TIME_SECONDS),
@@ -218,7 +268,6 @@ void WriteRow(const int handle, const int digits,
       DoubleToString(ema21H4, digits), DoubleToString(ema50H4, digits),
       DoubleToString(ema100H4, digits), DoubleToString(ema200H4, digits),
       DoubleToString(rsiH4, 4), DoubleToString(macdMainH4, digits),
-      DoubleToString(targetCloseDiff, digits), DoubleToString(targetMaxHigh, digits),
-      DoubleToString(targetMaxLow, digits));
+      DoubleToString(targetZZMaxUp, digits), DoubleToString(targetZZMaxDown, digits));
   }
 //+------------------------------------------------------------------+
