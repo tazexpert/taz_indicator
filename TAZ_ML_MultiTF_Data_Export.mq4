@@ -42,9 +42,14 @@ void OnStart()
   {
    int totalBars = Bars;
 
-   //--- start at Bars-InpExportBars, walk down to bar 1 (bar 0 is skipped: still forming)
-   int startBar = totalBars - InpExportBars;
+   //--- export the InpExportBars most recent bars: i=0 is the current (still forming) bar,
+   //--- so the most recent CLOSED bar is i=1 and the oldest bar in the export window is i=InpExportBars
+   int startBar = InpExportBars;
    int endBar   = 1;
+
+   //--- clamp to the amount of history actually available on the chart
+   if(startBar > totalBars - 1)
+      startBar = totalBars - 1;
 
    if(startBar < endBar)
      {
