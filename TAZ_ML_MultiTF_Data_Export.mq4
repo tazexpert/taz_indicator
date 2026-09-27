@@ -1,7 +1,6 @@
 //+------------------------------------------------------------------+
 //|                            TAZ ML MultiTF Data Export.mq4        |
-//|   Export multi-timeframe indicator features and ZigZag-based     |
-//|   swing targets to CSV for Machine Learning training             |
+//|   Export raw OHLC price history to CSV                          |
 //+------------------------------------------------------------------+
 #property copyright "TAZ"
 #property strict
@@ -9,28 +8,6 @@
 
 //--- Number of most recent bars to export
 input int InpExportBars = 100;
-
-//--- EMA periods (used on CTF, H1 and H4)
-input int InpEMA1Period = 21;
-input int InpEMA2Period = 50;
-input int InpEMA3Period = 100;
-input int InpEMA4Period = 200;
-
-//--- RSI period
-input int InpRSIPeriod = 14;
-
-//--- ATR period (CTF only)
-input int InpATRPeriod = 14;
-
-//--- MACD parameters
-input int InpMACDFastEMA   = 12;
-input int InpMACDSlowEMA   = 26;
-input int InpMACDSignalSMA = 9;
-
-//--- ZigZag parameters used to locate the next future swing High/Low
-input int InpZZDepth     = 12;
-input int InpZZDeviation = 5;
-input int InpZZBackstep  = 3;
 
 //--- output file name
 input string InpFileName = "TAZ_ML_MultiTF_Data.csv";
@@ -58,16 +35,6 @@ void OnStart()
       return;
      }
 
-   //--- warm up the ZigZag indicator once and verify it loaded correctly
-   ResetLastError();
-   iCustom(NULL, 0, "ZigZag", InpZZDepth, InpZZDeviation, InpZZBackstep, 1, 0);
-   if(GetLastError() == ERR_INDICATOR_CANNOT_LOAD)
-     {
-      Print("TAZ ML Export: Failed to load the standard 'ZigZag' custom indicator. ",
-            "Make sure ZigZag.ex4 is available in MQL4\\Indicators.");
-      return;
-     }
-
    int handle = FileOpen(InpFileName, FILE_WRITE | FILE_CSV, ',');
    if(handle == INVALID_HANDLE)
      {
@@ -75,204 +42,26 @@ void OnStart()
       return;
      }
 
-   WriteHeader(handle);
+   FileWrite(handle, "Timestamp", "Open", "High", "Low", "Close");
 
-   //--- track previous bar's EMA and MACD values to detect crossovers
-   double prevEMAFastCTF  = EMPTY_VALUE;
-   double prevEMASlowCTF  = EMPTY_VALUE;
-   double prevMACDMainCTF = EMPTY_VALUE;
-   bool   havePrev = false;
-
+   int digits = (int)Digits;
    int rowsWritten = 0;
-   int rowsSkipped = 0;
 
    //--- loop from oldest bar to newest bar within the requested range
    for(int i = startBar; i >= endBar; i--)
      {
-      //--- Current timeframe (CTF) OHLCV
-      datetime barTime  = Time[i];
-      double   barOpen  = Open[i];
-      double   barHigh  = High[i];
-      double   barLow   = Low[i];
-      double   barClose = Close[i];
-      long     barVolume = Volume[i];
-
-      //--- CTF indicators
-      double rsiCTF = iRSI(NULL, 0, InpRSIPeriod, PRICE_CLOSE, i);
-      double atrCTF = iATR(NULL, 0, InpATRPeriod, i);
-
-      double ema21CTF  = iMA(NULL, 0, InpEMA1Period, 0, MODE_EMA, PRICE_CLOSE, i);
-      double ema50CTF  = iMA(NULL, 0, InpEMA2Period, 0, MODE_EMA, PRICE_CLOSE, i);
-      double ema100CTF = iMA(NULL, 0, InpEMA3Period, 0, MODE_EMA, PRICE_CLOSE, i);
-      double ema200CTF = iMA(NULL, 0, InpEMA4Period, 0, MODE_EMA, PRICE_CLOSE, i);
-
-      double emaDistanceCTF = ema21CTF - ema50CTF;
-
-      double macdMainCTF   = iMACD(NULL, 0, InpMACDFastEMA, InpMACDSlowEMA, InpMACDSignalSMA, PRICE_CLOSE, MODE_MAIN, i);
-      double macdSignalCTF = iMACD(NULL, 0, InpMACDFastEMA, InpMACDSlowEMA, InpMACDSignalSMA, PRICE_CLOSE, MODE_SIGNAL, i);
-
-      //--- EMA 21/50 crossover flag, compared against the previous (older) processed bar
-      int emaCrossover = 0;
-      int macdZeroCrossover = 0;
-      if(havePrev)
-        {
-         if(prevEMAFastCTF <= prevEMASlowCTF && ema21CTF > ema50CTF)
-            emaCrossover = 1;
-         else if(prevEMAFastCTF >= prevEMASlowCTF && ema21CTF < ema50CTF)
-            emaCrossover = -1;
-
-         if(prevMACDMainCTF <= 0.0 && macdMainCTF > 0.0)
-            macdZeroCrossover = 1;
-         else if(prevMACDMainCTF >= 0.0 && macdMainCTF < 0.0)
-            macdZeroCrossover = -1;
-        }
-
-      prevEMAFastCTF  = ema21CTF;
-      prevEMASlowCTF  = ema50CTF;
-      prevMACDMainCTF = macdMainCTF;
-      havePrev = true;
-
-      //--- CRITICAL MTF ALIGNMENT: locate the corresponding H1 and H4 bars
-      int shiftH1 = iBarShift(NULL, PERIOD_H1, barTime, false);
-      int shiftH4 = iBarShift(NULL, PERIOD_H4, barTime, false);
-
-      //--- H1 features
-      double ema21H1  = iMA(NULL, PERIOD_H1, InpEMA1Period, 0, MODE_EMA, PRICE_CLOSE, shiftH1);
-      double ema50H1  = iMA(NULL, PERIOD_H1, InpEMA2Period, 0, MODE_EMA, PRICE_CLOSE, shiftH1);
-      double ema100H1 = iMA(NULL, PERIOD_H1, InpEMA3Period, 0, MODE_EMA, PRICE_CLOSE, shiftH1);
-      double ema200H1 = iMA(NULL, PERIOD_H1, InpEMA4Period, 0, MODE_EMA, PRICE_CLOSE, shiftH1);
-      double rsiH1    = iRSI(NULL, PERIOD_H1, InpRSIPeriod, PRICE_CLOSE, shiftH1);
-      double macdMainH1 = iMACD(NULL, PERIOD_H1, InpMACDFastEMA, InpMACDSlowEMA, InpMACDSignalSMA, PRICE_CLOSE, MODE_MAIN, shiftH1);
-
-      //--- H4 features
-      double ema21H4  = iMA(NULL, PERIOD_H4, InpEMA1Period, 0, MODE_EMA, PRICE_CLOSE, shiftH4);
-      double ema50H4  = iMA(NULL, PERIOD_H4, InpEMA2Period, 0, MODE_EMA, PRICE_CLOSE, shiftH4);
-      double ema100H4 = iMA(NULL, PERIOD_H4, InpEMA3Period, 0, MODE_EMA, PRICE_CLOSE, shiftH4);
-      double ema200H4 = iMA(NULL, PERIOD_H4, InpEMA4Period, 0, MODE_EMA, PRICE_CLOSE, shiftH4);
-      double rsiH4    = iRSI(NULL, PERIOD_H4, InpRSIPeriod, PRICE_CLOSE, shiftH4);
-      double macdMainH4 = iMACD(NULL, PERIOD_H4, InpMACDFastEMA, InpMACDSlowEMA, InpMACDSignalSMA, PRICE_CLOSE, MODE_MAIN, shiftH4);
-
-      //--- Targets / labels: find the next ZigZag swing High and swing Low that occur
-      //--- strictly after bar i (i.e. searching forward in time from j=i-1 down to j=0)
-      double nextZZHigh = 0.0;
-      double nextZZLow  = 0.0;
-      bool   foundHigh  = false;
-      bool   foundLow   = false;
-
-      for(int j = i - 1; j >= 0; j--)
-        {
-         if(!foundHigh)
-           {
-            double zzHighVal = iCustom(NULL, 0, "ZigZag", InpZZDepth, InpZZDeviation, InpZZBackstep, 1, j);
-            if(zzHighVal != 0.0)
-              {
-               nextZZHigh = zzHighVal;
-               foundHigh = true;
-              }
-           }
-
-         if(!foundLow)
-           {
-            double zzLowVal = iCustom(NULL, 0, "ZigZag", InpZZDepth, InpZZDeviation, InpZZBackstep, 2, j);
-            if(zzLowVal != 0.0)
-              {
-               nextZZLow = zzLowVal;
-               foundLow = true;
-              }
-           }
-
-         //--- both swing points located: stop searching immediately so we capture
-         //--- only the very next swing cycle, not a later one
-         if(foundHigh && foundLow)
-            break;
-        }
-
-      //--- if the loop reached bar 0 without finding both swing points, skip this row
-      if(!foundHigh || !foundLow)
-        {
-         rowsSkipped++;
-         continue;
-        }
-
-      double targetZZMaxUp   = nextZZHigh - barClose;
-      double targetZZMaxDown = barClose - nextZZLow;
-
-      WriteRow(handle, digitsOf(),
-               barTime, barOpen, barHigh, barLow, barClose, barVolume,
-               rsiCTF, atrCTF,
-               ema21CTF, ema50CTF, ema100CTF, ema200CTF,
-               emaDistanceCTF, emaCrossover,
-               macdMainCTF, macdSignalCTF, macdZeroCrossover,
-               ema21H1, ema50H1, ema100H1, ema200H1, rsiH1, macdMainH1,
-               ema21H4, ema50H4, ema100H4, ema200H4, rsiH4, macdMainH4,
-               targetZZMaxUp, targetZZMaxDown);
+      FileWrite(handle,
+         TimeToString(Time[i], TIME_DATE | TIME_MINUTES | TIME_SECONDS),
+         DoubleToString(Open[i], digits),
+         DoubleToString(High[i], digits),
+         DoubleToString(Low[i], digits),
+         DoubleToString(Close[i], digits));
 
       rowsWritten++;
      }
 
    FileClose(handle);
 
-   Print("TAZ ML Export: Finished. Rows written=", rowsWritten,
-         " Rows skipped (no future ZigZag pair found)=", rowsSkipped,
-         " File=", InpFileName);
-  }
-
-//+------------------------------------------------------------------+
-//| Return the current chart's price digits                          |
-//+------------------------------------------------------------------+
-int digitsOf()
-  {
-   return(Digits);
-  }
-
-//+------------------------------------------------------------------+
-//| Write the CSV header row                                         |
-//+------------------------------------------------------------------+
-void WriteHeader(const int handle)
-  {
-   FileWrite(handle,
-      "Timestamp", "Open", "High", "Low", "Close", "Volume",
-      "RSI_CTF", "ATR_CTF",
-      "EMA21_CTF", "EMA50_CTF", "EMA100_CTF", "EMA200_CTF",
-      "EMA_Distance", "EMA_Crossover",
-      "MACD_Main_CTF", "MACD_Signal_CTF", "MACD_Zero_Crossover",
-      "EMA21_H1", "EMA50_H1", "EMA100_H1", "EMA200_H1", "RSI_H1", "MACD_Main_H1",
-      "EMA21_H4", "EMA50_H4", "EMA100_H4", "EMA200_H4", "RSI_H4", "MACD_Main_H4",
-      "Target_ZZ_Max_Up", "Target_ZZ_Max_Down");
-  }
-
-//+------------------------------------------------------------------+
-//| Write a single data row to the CSV file                          |
-//+------------------------------------------------------------------+
-void WriteRow(const int handle, const int digits,
-              const datetime barTime, const double barOpen, const double barHigh,
-              const double barLow, const double barClose, const long barVolume,
-              const double rsiCTF, const double atrCTF,
-              const double ema21CTF, const double ema50CTF, const double ema100CTF, const double ema200CTF,
-              const double emaDistanceCTF, const int emaCrossover,
-              const double macdMainCTF, const double macdSignalCTF, const int macdZeroCrossover,
-              const double ema21H1, const double ema50H1, const double ema100H1, const double ema200H1,
-              const double rsiH1, const double macdMainH1,
-              const double ema21H4, const double ema50H4, const double ema100H4, const double ema200H4,
-              const double rsiH4, const double macdMainH4,
-              const double targetZZMaxUp, const double targetZZMaxDown)
-  {
-   FileWrite(handle,
-      TimeToString(barTime, TIME_DATE | TIME_MINUTES | TIME_SECONDS),
-      DoubleToString(barOpen, digits), DoubleToString(barHigh, digits),
-      DoubleToString(barLow, digits), DoubleToString(barClose, digits),
-      barVolume,
-      DoubleToString(rsiCTF, 4), DoubleToString(atrCTF, digits),
-      DoubleToString(ema21CTF, digits), DoubleToString(ema50CTF, digits),
-      DoubleToString(ema100CTF, digits), DoubleToString(ema200CTF, digits),
-      DoubleToString(emaDistanceCTF, digits), emaCrossover,
-      DoubleToString(macdMainCTF, digits), DoubleToString(macdSignalCTF, digits), macdZeroCrossover,
-      DoubleToString(ema21H1, digits), DoubleToString(ema50H1, digits),
-      DoubleToString(ema100H1, digits), DoubleToString(ema200H1, digits),
-      DoubleToString(rsiH1, 4), DoubleToString(macdMainH1, digits),
-      DoubleToString(ema21H4, digits), DoubleToString(ema50H4, digits),
-      DoubleToString(ema100H4, digits), DoubleToString(ema200H4, digits),
-      DoubleToString(rsiH4, 4), DoubleToString(macdMainH4, digits),
-      DoubleToString(targetZZMaxUp, digits), DoubleToString(targetZZMaxDown, digits));
+   Print("TAZ ML Export: Finished. Rows written=", rowsWritten, " File=", InpFileName);
   }
 //+------------------------------------------------------------------+
